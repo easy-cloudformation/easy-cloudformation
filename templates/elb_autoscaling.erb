@@ -1,0 +1,476 @@
+{
+  "AWSTemplateFormatVersion":"2010-09-09",
+
+  "Description":"Creates a group of AutoScaling instances to run App.",
+
+  "Parameters":{
+    "HealthCheckDelay":{
+      "Description":"Time in seconds after a new EC2 instance comes into service that Auto Scaling starts checking its health",
+      "Type":"String",
+      "Default":"300"
+    },
+    "SSHKeyName":{
+      "Description":"The SSH keyname that you might use to access the bastion box, if you need to",
+      "Type":"String"
+    },
+    "MyVpcId":{
+      "Description":"The VPC ID that you're deploying into",
+      "Type":"String",
+      "MinLength":"12",
+      "MaxLength":"12",
+      "AllowedPattern":"vpc-[a-f0-9]{8}",
+      "ConstraintDescription":"Must be a valid VPC ID"
+    },
+    "AMI":{
+      "Description":"The desired valid AMI to use",
+      "Type":"String",
+      "MinLength":"12",
+      "MaxLength":"12",
+      "AllowedPattern":"ami-[a-f0-9]{8}",
+      "Default":"ami-316cfc0b"
+    },
+    "ZoneName":{
+      "Description":"The zone to create the human name in",
+      "Type":"String",
+      "MinLength":"1",
+      "MaxLength":"128"
+    },
+    "AppName":{
+      "Default":"commercial-contentapp",
+      "Description":"The human readable name",
+      "Type":"String",
+      "MinLength":"1",
+      "MaxLength":"32"
+    },
+    "ELBHttpsCert":{
+      "Description":"SSL CertID for ELB",
+      "Type":"String"
+    },
+    "AppServerCIDRIp":{
+      "Description":"CIDR IP for to connect to app instance",
+      "Type":"String"
+    },
+    "ThresholdHighAlarm":{
+      "Description":"High alarm of the CPU threshold",
+      "Type":"String",
+      "Default":"80"
+    },
+    "ThresholdLowAlarm":{
+      "Description":"Low alarm of the CPU threshold",
+      "Type":"String",
+      "Default":"35"
+    },
+    "AvailabilityZones":{
+      "Description":"AvailabilityZones",
+      "Type":"String"
+    },
+    "ELBPublicSubnets":{
+      "Description":"Public subnets for LoadBalancer",
+      "Type":"String"
+    },
+    "HealthCheckTarget":{
+      "Description":"Health check target url",
+      "Type":"String"
+    },
+    "EC2PrivateSubnets":{
+      "Description":"Private subnets for EC2 instances",
+      "Type":"String"
+    }
+  },
+
+  "Resources":{
+    "AppServerELB":{
+      "Type":"AWS::ElasticLoadBalancing::LoadBalancer",
+      "Properties":{
+        "Subnets":{"Ref":"ELBPublicSubnets"},
+        "Listeners":[
+          {
+            "LoadBalancerPort":"80",
+            "InstancePort":80,
+            "Protocol":"HTTP"
+          },
+          {
+            "LoadBalancerPort":"443",
+            "Protocol":"HTTPS",
+            "InstancePort":80,
+            "InstanceProtocol":"HTTP",
+            "SSLCertificateId":{
+              "Ref":"ELBHttpsCert"
+            }
+          }
+        ],
+        "HealthCheck":{
+          "Target":{"Ref":"HealthCheckTarget"},
+          "HealthyThreshold":"3",
+          "UnhealthyThreshold":"5",
+          "Interval":"30",
+          "Timeout":"5"
+        },
+        "SecurityGroups":[
+          {
+            "Ref":"PublicELBSecurityGroup"
+          }
+        ]
+      }
+    },
+
+    "PublicELBSecurityGroup":{
+      "Type":"AWS::EC2::SecurityGroup",
+      "Properties":{
+        "GroupDescription":"Permit the ELB to talk to the world",
+        "SecurityGroupIngress":[
+          {
+            "IpProtocol":"tcp",
+            "FromPort":"80",
+            "ToPort":"80",
+            "CidrIp":"0.0.0.0/0"
+          },
+          {
+            "IpProtocol":"tcp",
+            "FromPort":"443",
+            "ToPort":"443",
+            "CidrIp":"0.0.0.0/0"
+          },
+          {
+            "IpProtocol":"icmp",
+            "FromPort":"-1",
+            "ToPort":"-1",
+            "CidrIp":"0.0.0.0/0"
+          }
+        ],
+        "SecurityGroupEgress":[
+          {
+            "IpProtocol":"-1",
+            "FromPort":"0",
+            "ToPort":"65535",
+            "CidrIp":"0.0.0.0/0"
+          }
+        ],
+        "VpcId":{
+          "Ref":"MyVpcId"
+        }
+      }
+    },
+
+    "AppServerUser":{
+      "Type":"AWS::IAM::User",
+      "Properties":{
+        "Path":"/application/"
+      }
+    },
+
+    "AppUserPolicy":{
+      "Type":"AWS::IAM::Policy",
+      "Properties":{
+        "PolicyName":"AppUserPolicy",
+        "Users":[
+          {
+            "Ref":"AppServerUser"
+          }
+        ],
+        "PolicyDocument":{
+          "Statement":[
+            {
+              "Effect":"Allow",
+              "Action":"cloudformation:DescribeStackResource",
+              "Resource":"*"
+            },
+            {
+              "Effect":"Allow",
+              "Action":"cloudwatch:PutMetricData",
+              "Resource":"*"
+            },
+            {
+              "Effect":"Allow",
+              "Action":"s3:Get*",
+              "Resource":"*"
+            },
+            {
+              "Effect":"Allow",
+              "Action":"s3:Put*",
+              "Resource":"*"
+            },
+            {
+              "Effect":"Allow",
+              "Action":"s3:List*",
+              "Resource":"*"
+            },
+            {
+              "Effect":"Allow",
+              "Action":"ses:SendRawEmail",
+              "Resource":"*"
+            }
+          ]
+        }
+      }
+    },
+
+    "AppServerKeys":{
+      "Type":"AWS::IAM::AccessKey",
+      "Properties":{
+        "UserName":{
+          "Ref":"AppServerUser"
+        }
+      }
+    },
+
+    "AppServerAutoScalingGroup":{
+      "Type":"AWS::AutoScaling::AutoScalingGroup",
+      "Properties":{
+        "AvailabilityZones":{"Ref":"AvailabilityZones"},
+        "HealthCheckType":"ELB",
+        "HealthCheckGracePeriod":{
+          "Ref":"HealthCheckDelay"
+        },
+        "LaunchConfigurationName":{
+          "Ref":"AppServerLaunchConfiguration"
+        },
+        "LoadBalancerNames":[
+          {
+            "Ref":"AppServerELB"
+          }
+        ],
+        "MinSize":"2",
+        "MaxSize":"8",
+        "VPCZoneIdentifier":{"Ref":"EC2PrivateSubnets"},
+        "Tags":[
+          {
+            "Key":"CloudFormationStack",
+            "Value":{
+              "Ref":"AWS::StackName"
+            },
+            "PropagateAtLaunch":true
+          },
+          {
+            "Key":"CloudFormationStackId",
+            "Value":{
+              "Ref":"AWS::StackId"
+            },
+            "PropagateAtLaunch":true
+          },
+          {
+            "Key":"Name",
+            "Value":{
+              "Fn::Join":["-",[ {"Ref":"AWS::AppName"}, {"Ref":"AWS::StackName"} ]]
+            },
+            "PropagateAtLaunch":true
+          }
+        ]
+      }
+    },
+
+    "AppServerLaunchConfiguration":{
+      "Metadata":{
+        "AWS::CloudFormation::Init":{
+          "configSets":{
+            "default":[
+              "installApps",
+              "startupApps"
+            ]
+          },
+          "installApps":{
+            "commands":{
+              "install-nginx": {
+                "command":["yum", "-y", "install", "nginx"]
+              },
+
+              "install-app":{
+                //specify command to install app rpm
+                "command":["yum", "-y", "install", ""]
+              }
+            }
+          },
+          "startupApps":{
+            "services":{
+              "sysvinit":{
+                "nginx":{
+                  "enabled":"true",
+                  "ensureRunning":"true"
+                }
+              }
+            }
+          }
+        }
+      },
+      "Type":"AWS::AutoScaling::LaunchConfiguration",
+      "Properties":{
+        "ImageId":{
+          "Ref":"AMI"
+        },
+        "InstanceType":"m1.small",
+        "UserData":{
+          "Fn::Base64":{
+            "Fn::Join":[
+              "",
+              [
+                "#!/bin/bash\n",
+                "yum update -y aws-cfn-bootstrap\n",
+
+                "# Initial cfn-init run\n",
+                "/opt/aws/bin/cfn-init -s ", {
+                "Ref":"AWS::StackName"
+              },
+                "         -r AppServerLaunchConfiguration ",
+                "         --access-key ", {
+                "Ref":"AppServerKeys"
+              },
+                "         --secret-key ", {
+                "Fn::GetAtt":["AppServerKeys", "SecretAccessKey"]
+              },
+                "         --region ", {
+                "Ref":"AWS::Region"
+              },
+                " || error_exit 'Failed to run cfn-init'\n",
+
+                "# Start up the cfn-hup daemon to listen for changes\n",
+                "/opt/aws/bin/cfn-hup || error_exit 'Failed to start cfn-hup'\n",
+              ]
+            ]
+          }
+        },
+        "KeyName":{
+          "Ref":"SSHKeyName"
+        },
+        "SecurityGroups":[
+          {
+            "Ref":"AppServerSecurityGroup"
+          }
+        ]
+      }
+    },
+
+    "AppServerSecurityGroup":{
+      "Type":"AWS::EC2::SecurityGroup",
+      "Properties":{
+        "GroupDescription":"Permit inbound HTTP from the ELB and ICMP from inside the VPC",
+        "SecurityGroupIngress":[
+          {
+            "IpProtocol":"tcp",
+            "FromPort":"80",
+            "ToPort":"80",
+            "SourceSecurityGroupId":{
+              "Ref":"PublicELBSecurityGroup"
+            }
+          },
+          {
+            "IpProtocol":"icmp",
+            "FromPort":"-1",
+            "ToPort":"-1",
+            "CidrIp":{
+              "Ref":"AppServerCIDRIp"
+            }
+          }
+        ],
+        "VpcId":{
+          "Ref":"MyVpcId"
+        }
+      }
+    },
+
+    "ScaleUpPolicy":{
+      "Type":"AWS::AutoScaling::ScalingPolicy",
+      "Properties":{
+        "AdjustmentType":"ChangeInCapacity",
+        "AutoScalingGroupName":{
+          "Ref":"AppServerAutoScalingGroup"
+        },
+        "Cooldown":"600",
+        "ScalingAdjustment":"2"
+      }
+    },
+    "CPUAlarmHigh":{
+      "Type":"AWS::CloudWatch::Alarm",
+      "Properties":{
+        "EvaluationPeriods":"2",
+        "Statistic":"Average",
+        "Threshold":{"Ref":"ThresholdHighAlarm"},
+        "AlarmDescription":"Alarm if CPU too high or metric disappears indicating instance is down",
+        "Period":"60",
+        "AlarmActions":[
+          {
+            "Ref":"ScaleUpPolicy"
+          }
+        ],
+        "Namespace":"AWS/EC2",
+        "Dimensions":[
+          {
+            "Name":"AutoScalingGroupName",
+            "Value":{
+              "Ref":"AppServerAutoScalingGroup"
+            }
+          }
+        ],
+        "ComparisonOperator":"GreaterThanThreshold",
+        "MetricName":"CPUUtilization"
+      }
+    },
+
+    "ScaleDownPolicy":{
+      "Type":"AWS::AutoScaling::ScalingPolicy",
+      "Properties":{
+        "AdjustmentType":"ChangeInCapacity",
+        "AutoScalingGroupName":{
+          "Ref":"AppServerAutoScalingGroup"
+        },
+        "Cooldown":"300",
+        "ScalingAdjustment":"-2"
+      }
+    },
+    "CPUAlarmLow":{
+      "Type":"AWS::CloudWatch::Alarm",
+      "Properties":{
+        "EvaluationPeriods":"8",
+        "Statistic":"Average",
+        "Threshold":{"Ref":"ThresholdLowAlarm"},
+        "AlarmDescription":"Alarm if CPU low enough to scale down",
+        "Period":"60",
+        "AlarmActions":[
+          {
+            "Ref":"ScaleDownPolicy"
+          }
+        ],
+        "Namespace":"AWS/EC2",
+        "Dimensions":[
+          {
+            "Name":"AutoScalingGroupName",
+            "Value":{
+              "Ref":"AppServerAutoScalingGroup"
+            }
+          }
+        ],
+        "ComparisonOperator":"LessThanThreshold",
+        "MetricName":"CPUUtilization"
+      }
+    },
+
+    "CnameOfNiceness":{
+      "Type":"AWS::Route53::RecordSet",
+      "Properties":{
+        "Comment":"Public CNAME",
+        "HostedZoneName":{
+          "Ref":"ZoneName"
+        },
+        "Name":{
+          "Fn::Join":["", [{"Ref":"AppName"},".",{"Ref":"ZoneName"}]]
+        },
+        "Type":"CNAME",
+        "TTL":"600",
+        "ResourceRecords":[
+          {
+            "Fn::GetAtt":[ "AppServerELB", "DNSName" ]
+          }
+        ]
+      }
+    }
+  },
+
+  "Outputs":{
+    "AppEndPoint":{
+      "Description":"public endpoint for app.",
+      "Value":{
+        "Fn::Join":["", [ "http://", {"Ref":"AppName"}, ".", {"Ref":"ZoneName"}, "/" ]]
+      }
+    }
+  }
+}
+
