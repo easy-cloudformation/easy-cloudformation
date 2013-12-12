@@ -5,9 +5,7 @@ Gem::Specification.new do |s|
   s.summary     = "Make cloudformation easy"
   s.description = ""
   s.authors     = ["Yang Dong", "Ren Xiaojun"]
-  s.email       = 'don.yangdong@gmail.com'
+  s.email       = ['don.yangdong@gmail.com', 'nicholas85211@gmail.com']
   s.files       = ["lib/easy_cloudformation.rb"]
-  s.homepage    =
-    'http://rubygems.org/gems/hola'
-  s.license       = 'MIT'
+  s.homepage    = 'https://github.com/easy-cloudformation/easy-cloudformation'
 end
